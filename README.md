@@ -1,25 +1,25 @@
-[![PyPI version](https://badge.fury.io/py/vcf2csv.svg)](https://pypi.org/project/vcf2csv/)
-[![Python](https://img.shields.io/badge/python-3.6+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/jrkoop/vcf2csv/main/logo.jpg" alt="Agilitatum logo" width="300"/>
-</p>
 
 # vcf2csv
 
-Convert VCARD 3.0 `.vcf` files into clean `.csv` format. Handles Apple/iCloud-specific fields, related names, dates, etc.
+Convert VCARD x.x `.vcf` files into clean `.csv` format. Handles Apple/iCloud-specific fields, related names, dates, etc.
+Not perfetc buyt works.
 
 ## Usage
-```bash
-vcf2csv my_contacts.vcf -o ./csv_output
 ```
+usage: vcf_parser.py [-h] [-o OUTPUT] [-i INPUT_ENCODING] [-e OUTPUT_ENCODING] vcf_file
 
-This Python code is fast. It converted a single VCF file containing over 80K records into CSV format in just a few minutes.
+Convert VCF (vCard) contact files into CSV with configurable character encoding.
 
----
-## 🤖 Built With Help From ChatGPT
+positional arguments:
+  vcf_file              Path to the input VCF file.
 
-This project was created in collaboration with [ChatGPT Python GPT](https://openai.com/chatgpt), a customized AI assistant for advanced Python development.
-
-*Special thanks to GPT for helping transform a messy vCard export into a clean, production-grade command-line tool.*
+options:
+  -h, --help            show this help message and exit
+  -o, --output OUTPUT   Path for output CSV file. Defaults to current working directory. (default: None)
+  -i, --input-encoding INPUT_ENCODING
+                        Force input encoding (e.g. utf-8, latin-1, cp1252, iso-8859-1). If omitted, auto-detects utf-8-sig with latin-1 fallback.
+                        (default: None)
+  -e, --output-encoding OUTPUT_ENCODING
+                        Set output CSV encoding. (default: utf-8-sig)
+```

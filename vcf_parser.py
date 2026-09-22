@@ -1,151 +1,142 @@
-#!/usr/bin/env python3
-"""
-VCARD 3.0 Parser CLI
-Usage:
-    python vcf_parser.py input1.vcf [input2.vcf ...] --output-dir ./csv_output
-    python vcf_parser.py contacts1.vcf contacts2.vcf --output-dir ./csv_out
-"""
-
-import re
-import os
 import argparse
-import pandas as pd
-from collections import defaultdict
+import csv
+import os
+import quopri
+import sys
 
-def parse_vcards(vcard_text):
-    vcards = re.findall(r"BEGIN:VCARD(.*?)END:VCARD", vcard_text, re.DOTALL)
 
-    standard_fields = ["N", "FN", "ORG", "TITLE", "BDAY"]
-    type_sensitive_fields = ["TEL", "EMAIL", "ADR", "URL", "IMPP"]
-    all_fields = standard_fields + ["RelatedNames", "CustomDates"]
+def parse_vcf_to_csv(
+    vcf_path: str,
+    output_csv_path: str = None,
+    input_encoding: str = None,
+    output_encoding: str = "utf-8-sig",
+) -> str:
+    """Parses a VCF (vCard) file into a CSV file with full encoding handling."""
+    # 1. Resolve default output directory to current working directory
+    if not output_csv_path:
+        base_name = os.path.splitext(os.path.basename(vcf_path))[0]
+        output_csv_path = os.path.join(os.getcwd(), f"{base_name}.csv")
 
-    type_field_patterns = {
-        field: re.compile(rf'{field}(?:;[^:]+)*:(.+)', re.IGNORECASE)
-        for field in type_sensitive_fields
-    }
-    type_extract_pattern = re.compile(r';type=([^:;]+)', re.IGNORECASE)
-    apple_related_pattern = re.compile(r"item(\d+)\.X-ABRELATEDNAMES(?::|;type=[^:]*:)(.+)")
-    apple_label_pattern = re.compile(r"item(\d+)\.X-ABLabel(?::|;type=[^:]*:)(.+)")
-    apple_date_pattern = re.compile(r"item(\d+)\.X-ABDATE(?::|;type=[^:]*:)(.+)")
+    # 2. Safely read input VCF file
+    lines = []
+    if input_encoding:
+        # Use user-specified encoding directly
+        with open(vcf_path, "r", encoding=input_encoding, errors="replace") as f:
+            lines = f.readlines()
+    else:
+        # Auto-detect fallback: try utf-8-sig first, then latin-1
+        try:
+            with open(vcf_path, "r", encoding="utf-8-sig") as f:
+                lines = f.readlines()
+        except UnicodeDecodeError:
+            with open(vcf_path, "r", encoding="latin-1", errors="replace") as f:
+                lines = f.readlines()
 
-    parsed_data = []
-    all_type_columns = set()
+    contacts = []
+    current_contact = {}
+    all_headers = set()
 
-    for block in vcards:
-        entry = defaultdict(list)
-        related_map = {}
-        label_map = {}
-        date_map = {}
-        field_type_map = defaultdict(list)
+    # 3. Line unfolding (RFC 6350)
+    unfolded_lines = []
+    for line in lines:
+        line_clean = line.rstrip("\r\n")
+        if line_clean.startswith((" ", "\t")) and unfolded_lines:
+            unfolded_lines[-1] += line_clean[1:]
+        else:
+            unfolded_lines.append(line_clean)
 
-        for line in block.strip().splitlines():
-            # Apple-related
-            if "X-ABRELATEDNAMES" in line:
-                match = apple_related_pattern.match(line)
-                if match:
-                    idx, value = match.groups()
-                    related_map[idx] = value.strip()
-                continue
-            if "X-ABLabel" in line:
-                match = apple_label_pattern.match(line)
-                if match:
-                    idx, label = match.groups()
-                    label_map[idx] = label.strip()
-                continue
-            if "X-ABDATE" in line:
-                match = apple_date_pattern.match(line)
-                if match:
-                    idx, date = match.groups()
-                    date_map[idx] = date.strip()
-                continue
+    # 4. Parse vCard contents
+    for line in unfolded_lines:
+        if line.startswith("BEGIN:VCARD"):
+            current_contact = {}
+            continue
+        elif line.startswith("END:VCARD"):
+            if current_contact:
+                contacts.append(current_contact)
+            continue
 
-            for field in type_sensitive_fields:
-                if line.startswith(field):
-                    match = type_field_patterns[field].search(line)
-                    if match:
-                        value = match.group(1).strip()
-                        if field == "URL" and value.lower().startswith("ms-outlook://"):
-                            continue
-                        types = type_extract_pattern.findall(line)
-                        if not types:
-                            types = ["GENERIC"]
-                        for t in types:
-                            col = f"{field.upper()}-{t.upper()}"
-                            field_type_map[col].append(value)
-                            all_type_columns.add(col)
-                    break
-            else:
-                for field in standard_fields:
-                    if line.startswith(field):
-                        try:
-                            _, value = line.split(":", 1)
-                            entry[field].append(value.strip())
-                        except ValueError:
-                            pass
+        if ":" not in line:
+            continue
 
-        # Apple: RelatedNames
-        relationships = []
-        for idx, name in related_map.items():
-            label = label_map.get(idx, "Related")
-            label_clean = re.sub(r"_\$!<(.*?)>!\$_", r"\1", label)
-            relationships.append(f"{label_clean}: {name}")
-        if relationships:
-            entry["RelatedNames"] = [" | ".join(relationships)]
+        header_part, value = line.split(":", 1)
 
-        # Apple: CustomDates
-        dates = []
-        for idx, date in date_map.items():
-            label = label_map.get(idx, "CustomDate")
-            label_clean = re.sub(r"_\$!<(.*?)>!\$_", r"\1", label)
-            dates.append(f"{label_clean}: {date}")
-        if dates:
-            entry["CustomDates"] = [" | ".join(dates)]
+        # Handle Quoted-Printable inline decoding
+        if "ENCODING=QUOTED-PRINTABLE" in header_part.upper():
+            try:
+                raw_bytes = value.replace("=", "").encode("ascii")
+                value = quopri.decodestring(raw_bytes).decode(
+                    "utf-8", errors="replace"
+                )
+            except Exception:
+                pass
 
-        # Clean semicolons
-        if "N" in entry:
-            entry["N"] = [re.sub(r';{2,}', ';', n) for n in entry["N"]]
+        field_name = header_part.split(";")[0].strip().upper()
 
-        # Clean backslashes in ADR
-        for col in list(field_type_map.keys()):
-            if col.startswith("ADR-"):
-                field_type_map[col] = [re.sub(r'\\{2,}', r'\\', a) for a in field_type_map[col]]
+        if field_name in ("VERSION", "PRODID"):
+            continue
 
-        # Merge everything
-        for col, values in field_type_map.items():
-            entry[col] = [" | ".join(values)]
+        all_headers.add(field_name)
 
-        parsed_data.append(entry)
+        if field_name in current_contact:
+            current_contact[field_name] += f"; {value.strip()}"
+        else:
+            current_contact[field_name] = value.strip()
 
-    rows = []
-    for entry in parsed_data:
-        flat = {}
-        for field in all_fields:
-            flat[field] = " | ".join(entry.get(field, []))
-        for col in all_type_columns:
-            flat[col] = " | ".join(entry.get(col, []))
-        rows.append(flat)
+    # 5. Write CSV file
+    fieldnames = sorted(list(all_headers))
+    with open(
+        output_csv_path,
+        "w",
+        newline="",
+        encoding=output_encoding,
+        errors="replace",
+    ) as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(contacts)
 
-    return pd.DataFrame(rows)
+    return output_csv_path
+
 
 def main():
-    parser = argparse.ArgumentParser(description="VCARD 3.0 to CSV Parser")
-    parser.add_argument("input", nargs="+", help="Path(s) to .vcf file(s)")
-    parser.add_argument("--output-dir", "-o", required=True, help="Directory to save CSV files")
+    parser = argparse.ArgumentParser(
+        description="Convert VCF (vCard) contact files into CSV with configurable character encoding.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("vcf_file", help="Path to the input VCF file.")
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Path for output CSV file. Defaults to current working directory.",
+        default=None,
+    )
+    parser.add_argument(
+        "-i",
+        "--input-encoding",
+        help="Force input encoding (e.g. utf-8, latin-1, cp1252, iso-8859-1). If omitted, auto-detects utf-8-sig with latin-1 fallback.",
+        default=None,
+    )
+    parser.add_argument(
+        "-e",
+        "--output-encoding",
+        help="Set output CSV encoding.",
+        default="utf-8-sig",
+    )
+
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    if not os.path.isfile(args.vcf_file):
+        print(f"Error: Input file '{args.vcf_file}' does not exist.", file=sys.stderr)
+        sys.exit(1)
 
-    for input_path in args.input:
-        try:
-            with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-            df = parse_vcards(text)
-            base_name = os.path.splitext(os.path.basename(input_path))[0]
-            output_path = os.path.join(args.output_dir, f"{base_name}.csv")
-            df.to_csv(output_path, index=False)
-            print(f"✅ Parsed: {input_path} → {output_path}")
-        except Exception as e:
-            print(f"❌ Failed to parse {input_path}: {e}")
+    out_path = parse_vcf_to_csv(
+        vcf_path=args.vcf_file,
+        output_csv_path=args.output,
+        input_encoding=args.input_encoding,
+        output_encoding=args.output_encoding,
+    )
+    print(f"Successfully converted '{args.vcf_file}' -> '{out_path}'")
+
 
 if __name__ == "__main__":
     main()
